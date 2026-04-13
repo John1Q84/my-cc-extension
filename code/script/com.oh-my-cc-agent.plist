@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.oh-my-cc-agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__VENV_PYTHON__</string>
+        <string>__APPROVAL_SERVER_PY__</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__APP_DIR__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SLACK_APPROVAL_BOT_TOKEN</key>
+        <string>__SLACK_APPROVAL_BOT_TOKEN__</string>
+        <key>SLACK_APPROVAL_CHANNEL_ID</key>
+        <string>__SLACK_APPROVAL_CHANNEL_ID__</string>
+        <key>SLACK_APPROVAL_AWS_REGION</key>
+        <string>__SLACK_APPROVAL_AWS_REGION__</string>
+        <key>DYNAMODB_TABLE</key>
+        <string>__DYNAMODB_TABLE__</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__LOG_DIR__/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_DIR__/stderr.log</string>
+</dict>
+</plist>
