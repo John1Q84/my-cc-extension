@@ -6,6 +6,37 @@ Claude Code의 권한 요청을 Slack으로 전달하고, Slack에서 Approve/De
 
 Claude Code 실행 중 파일 쓰기, 명령 실행 등 권한 요청이 발생하면 Slack 메시지로 알림을 받고, 버튼 클릭으로 승인/거부할 수 있다.
 
+### PermissionRequest Hook
+
+Claude Code는 [Hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) 시스템을 통해 특정 이벤트 발생 시 외부 명령이나 HTTP 요청을 실행할 수 있다. 그 중 `PermissionRequest` hook은 Claude Code가 사용자 승인이 필요한 동작(파일 편집, Bash 실행 등)을 수행하기 전에 트리거된다.
+
+이 프로젝트는 `PermissionRequest` hook을 HTTP 타입으로 등록하여, 권한 요청을 로컬 서버로 전달하고 Slack을 통해 원격으로 승인/거부할 수 있게 한다.
+
+**Hook 설정** (`~/.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:8080/hook",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+- `type: http` — Claude Code가 권한 요청 시 해당 URL로 POST 요청
+- `timeout: 300` — 5분 내 응답이 없으면 timeout
+- Hook이 `{"behavior": "allow"}`를 반환하면 승인, `{"behavior": "deny"}`를 반환하면 거부
+- 터미널에서 직접 승인/거부하면 hook 연결이 끊기며, 서버가 이를 감지하여 Slack 메시지를 자동 업데이트
+
 ## 처음부터 배포하기 (Fresh Deployment)
 
 ### 사전 요구사항
@@ -73,13 +104,73 @@ curl http://localhost:8080/health
 
 ## 아키텍처
 
+```mermaid
+flowchart LR
+    subgraph LOCAL["Local Machine"]
+        CC["Claude Code"]
+        HS["Approval Server\nlocalhost:8080"]
+    end
+
+    subgraph AWS["AWS"]
+        DDB["DynamoDB\nTTL 10min"]
+        APIGW["API Gateway"]
+        LMB["Lambda"]
+    end
+
+    subgraph SLACK["Slack"]
+        BOT["Slack Bot"]
+        USER["User"]
+    end
+
+    CC -- "POST /hook\nPermissionRequest" --> HS
+    HS -- "chat.postMessage\nApprove/Deny 버튼" --> BOT
+    HS -- "PutItem\nstatus=pending" --> DDB
+    HS -. "polling\nGetItem 5s" .-> DDB
+
+    BOT --> USER
+    USER -- "버튼 클릭" --> BOT
+    BOT -- "POST /slack/interact" --> APIGW
+    APIGW --> LMB
+    LMB -- "UpdateItem\nstatus=approved" --> DDB
+    LMB -- "response_url\n메시지 업데이트" --> BOT
+
+    DDB -. "decision" .-> HS
+    HS -- "allow / deny" --> CC
 ```
-Claude Code (local)
-  └─[PermissionRequest HTTP hook]─→ Approval Server (local:8080)
-                                         ├─→ Slack API (버튼 메시지 전송)
-                                         └─→ DynamoDB polling (결과 대기)
-                                                   ↑
-                                    API Gateway → Lambda (Slack webhook 수신 → DDB 저장)
+
+## Workflow
+
+```mermaid
+sequenceDiagram
+    participant CC as Claude Code
+    participant HS as Approval Server
+    participant SL as Slack
+    participant AG as API Gateway
+    participant LB as Lambda
+    participant DB as DynamoDB
+
+    CC->>HS: POST /hook (tool_name, input)
+    HS->>DB: PutItem (pending)
+    HS->>SL: chat.postMessage (버튼 메시지)
+
+    loop polling (5s, max 5min)
+        HS->>DB: GetItem
+        alt client disconnected
+            Note over HS: Terminal에서 처리됨
+            HS->>SL: chat.update (Resolved by terminal)
+            HS->>DB: UpdateItem (terminal)
+        end
+    end
+
+    Note over SL: 사용자 Approve 클릭
+
+    SL->>AG: POST /slack/interact
+    AG->>LB: invoke
+    LB->>DB: UpdateItem (approved)
+    LB->>SL: response_url (버튼 제거 + 결과 표시)
+
+    DB-->>HS: status=approved
+    HS-->>CC: {behavior: allow}
 ```
 
 자세한 내용: [docs/architecture.md](docs/architecture.md)
@@ -156,6 +247,7 @@ tail -f ~/Library/Logs/oh-my-cc-agent/stderr.log
 
 | 일시 | 변경사항 |
 |------|----------|
+| 2026-04-13_21:50 | README 다이어그램(Mermaid) + PermissionRequest Hook 설명 + 보안 리뷰 문서 + tfsec/bandit 조치 + terminal disconnect 감지 |
 | 2026-04-13_11:50 | /slack-notify global skill 추가: 작업 완료 요약을 Slack 채널로 전송하는 /notify 엔드포인트 + skill |
 | 2026-04-13_10:40 | 배포 패키징: deploy.sh/teardown.sh + Slack App 설정 가이드 + README 배포 워크스루 + 버튼 클릭 후 메시지 업데이트 수정 |
 | 2026-04-12_23:50 | oh-my-cc-agent LaunchAgent 서비스화 + install/uninstall 스크립트 + context 표시 + polling 5초 |
