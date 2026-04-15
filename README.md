@@ -6,6 +6,8 @@ Claude Code의 권한 요청을 Slack으로 전달하고, Slack에서 Approve/De
 
 Claude Code 실행 중 파일 쓰기, 명령 실행 등 권한 요청이 발생하면 Slack 메시지로 알림을 받고, 버튼 클릭으로 승인/거부할 수 있다.
 
+![Slack Approval Sample](docs/images/slack-approval-sample.png)
+
 ### PermissionRequest Hook
 
 Claude Code는 [Hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) 시스템을 통해 특정 이벤트 발생 시 외부 명령이나 HTTP 요청을 실행할 수 있다. 그 중 `PermissionRequest` hook은 Claude Code가 사용자 승인이 필요한 동작(파일 편집, Bash 실행 등)을 수행하기 전에 트리거된다.
