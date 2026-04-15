@@ -72,7 +72,7 @@ https://<api-id>.execute-api.<region>.amazonaws.com/slack/interact
 
 ## 환경변수 요약
 
-`~/.zshrc`에 아래 내용을 추가하여 영구 설정합니다:
+셸 프로필(예: `~/.zshrc`, `~/.bashrc`)에 아래 내용을 추가하여 영구 설정한다:
 
 ```bash
 # Claude Code Slack Approval
@@ -85,7 +85,7 @@ export TF_VAR_slack_signing_secret="..."
 # export DYNAMODB_TABLE="claude-approval-requests"
 ```
 
-설정 후 `source ~/.zshrc` 실행.
+추가 후 `source ~/.zshrc` (또는 해당 셸 프로필)을 실행하여 반영한다.
 
 ## 트러블슈팅
 
@@ -95,4 +95,4 @@ export TF_VAR_slack_signing_secret="..."
 | 버튼 클릭 후 반응 없음 | Interactivity Request URL이 올바른지 확인 |
 | Lambda 에러 | CloudWatch 로그 확인: `aws logs tail /aws/lambda/claude-approval-webhook --region ap-northeast-2` |
 | Signing Secret 불일치 | `TF_VAR_slack_signing_secret`과 Slack App의 Signing Secret이 동일한지 확인 |
-| 로컬 서버 미응답 | `curl http://localhost:8080/health` 및 `launchctl list | grep oh-my-cc-agent` 확인 |
+| 로컬 서버 미응답 | `curl http://localhost:8080/health` 및 `launchctl list \| grep oh-my-cc-agent` 확인 (macOS) |

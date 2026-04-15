@@ -94,7 +94,17 @@ AWS_REGION=ap-northeast-2
 
 ## Phase 4: Claude Code Hook 설정
 
-`~/.claude/settings.json`에 추가:
+`PermissionRequest` hook을 Claude Code 설정에 등록한다. 적용 범위에 따라 두 가지 방법 중 선택:
+
+**방법 A: Global 설정** — 모든 프로젝트에 적용 (`install-service.sh`가 자동 처리)
+
+파일: `~/.claude/settings.json`
+
+**방법 B: Project Local 설정** — 특정 프로젝트에만 적용 (수동 생성)
+
+파일: `<project-root>/.claude/settings.local.json`
+
+두 경우 모두 아래 `hooks` 블록을 추가한다:
 
 ```json
 {
@@ -114,6 +124,8 @@ AWS_REGION=ap-northeast-2
 }
 ```
 
+> `settings.local.json`에는 `permissions.allow` 등 프로젝트별 추가 설정을 함께 둘 수 있다. 자세한 key 구조는 [README](../README.md#claude-code-settings-구조) 참고.
+
 ---
 
 ## Phase 5: 실행 방법
@@ -131,6 +143,8 @@ python approval_server.py
 # 3. Claude Code 실행 (별도 터미널)
 claude
 ```
+
+> 또는 `deploy.sh`를 사용하면 1~3 과정이 자동으로 처리된다 (LaunchAgent 등록 포함).
 
 ---
 
@@ -163,7 +177,7 @@ slack-approval/
 1. Terraform으로 DynamoDB + Lambda + API GW 배포
 2. Slack App 생성 및 API GW URL 등록
 3. approval_server.py 작성 및 로컬 실행
-4. ~/.claude/settings.json에 hook 등록
+4. Claude Code settings에 PermissionRequest hook 등록 (global 또는 project local)
 5. Claude Code 실행 후 동작 확인
 ```
 
