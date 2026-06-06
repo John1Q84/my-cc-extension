@@ -49,6 +49,8 @@ def extract_user_context(transcript_path: str) -> str:
                 obj = json.loads(line)
                 if obj.get("type") != "user":
                     continue
+                if obj.get("isMeta"):  # skill/system 주입 메시지 제외
+                    continue
                 content = obj.get("message", {}).get("content", [])
                 if not isinstance(content, list):
                     continue
