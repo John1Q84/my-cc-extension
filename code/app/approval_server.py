@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 
@@ -61,7 +62,12 @@ def extract_user_context(transcript_path: str) -> str:
                         # Skip interrupt markers
                         if text.strip().startswith("[Request interrupted"):
                             continue
-                        last_user_text = text
+                        # 첨부 이미지 placeholder([Image #N]) 제거 — 실제 텍스트만 유지
+                        text = re.sub(r"\[Image #\d+\]", "", text)
+                        text = re.sub(r"\s{2,}", " ", text).strip(" ,")
+                        # placeholder만 있던 경우(빈 텍스트) → 이전 메시지 유지
+                        if text:
+                            last_user_text = text
     except Exception:
         logger.exception("Failed to read transcript: %s", transcript_path)
 

@@ -43,3 +43,29 @@ def test_skips_interrupt_marker(tmp_path):
     ]
     path = _write(tmp_path, lines)
     assert extract_user_context(path) == "실제 사용자 지시입니다"
+
+
+def test_strips_image_placeholder_keeps_real_text(tmp_path):
+    lines = [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "[Image #3] 이렇게 보입니다."}]}},
+    ]
+    path = _write(tmp_path, lines)
+    assert extract_user_context(path) == "이렇게 보입니다."
+
+
+def test_strips_multiple_image_placeholders(tmp_path):
+    lines = [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "[Image #1], [Image #2] 이미지를 첨부합니다."}]}},
+    ]
+    path = _write(tmp_path, lines)
+    assert extract_user_context(path) == "이미지를 첨부합니다."
+
+
+def test_image_only_text_falls_back_to_prior_message(tmp_path):
+    lines = [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "이전 실제 지시"}]}},
+        {"type": "user", "message": {"content": [{"type": "text", "text": "[Image #1]"}]}},
+    ]
+    path = _write(tmp_path, lines)
+    # 이미지 placeholder만 있으면 빈 텍스트 → 이전 실제 메시지 유지
+    assert extract_user_context(path) == "이전 실제 지시"
