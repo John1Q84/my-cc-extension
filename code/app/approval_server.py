@@ -15,6 +15,7 @@ import uuid
 import boto3
 from fastapi import FastAPI, Request
 from slack_sdk import WebClient
+from summarizer import summarize
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ def build_slack_blocks(
     tool_input: str,
     cwd: str = "",
     user_context: str = "",
+    summary: dict | None = None,
 ) -> list:
     truncated_input = tool_input[:500] + "..." if len(tool_input) > 500 else tool_input
     truncated_context = user_context[:300] + "..." if len(user_context) > 300 else user_context
@@ -82,6 +84,21 @@ def build_slack_blocks(
             },
         },
     ]
+
+    if summary:
+        risk_lines = "\n".join(f"• {r}" for r in summary.get("risk", [])) or "• (특이사항 없음)"
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*📋 요청사항*\n{summary.get('request', '')}\n\n"
+                    f"*⚠️ 영향도 / Risk*\n{risk_lines}\n\n"
+                    f"*✅ 확인 필요*\n{summary.get('confirm', '')}"
+                )[:3000],
+            },
+        })
+        blocks.append({"type": "divider"})
 
     if truncated_context:
         blocks.append(
@@ -104,12 +121,19 @@ def build_slack_blocks(
             }
         )
 
+    if summary:
+        # 요약이 있으면 원본은 참고용으로 더 넉넉히(1500자) 표시
+        raw = tool_input[:1500] + "..." if len(tool_input) > 1500 else tool_input
+        input_label = "원본 입력 (참고)"
+    else:
+        raw = truncated_input
+        input_label = "Input"
     blocks.append(
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Input:*\n```{truncated_input}```",
+                "text": f"*{input_label}:*\n```{raw}```",
             },
         }
     )
@@ -290,6 +314,9 @@ async def hook(request: Request):
     # transcript에서 사용자의 최근 요청 컨텍스트 추출
     user_context = extract_user_context(transcript_path)
 
+    # Bedrock Haiku로 요청 요약 (실패 시 None → raw fallback)
+    summary = summarize(tool_name, tool_input, user_context)
+
     approval_id = str(uuid.uuid4())
     expires_at = int(time.time()) + 600  # TTL 10분
 
@@ -309,7 +336,7 @@ async def hook(request: Request):
     logger.info("Created approval_id=%s for tool=%s", approval_id, tool_name)
 
     # Slack 메시지 전송
-    blocks = build_slack_blocks(approval_id, tool_name, tool_input, cwd, user_context)
+    blocks = build_slack_blocks(approval_id, tool_name, tool_input, cwd, user_context, summary)
     slack_resp = slack.chat_postMessage(
         channel=SLACK_CHANNEL_ID,
         text=f"Claude Code permission request: {tool_name}",
