@@ -58,3 +58,31 @@ def parse_summary_response(raw: str) -> dict | None:
     if not isinstance(obj.get("risk"), list):
         return None
     return obj
+
+
+_bedrock = boto3.client(
+    "bedrock-runtime",
+    region_name=BEDROCK_REGION,
+    config=Config(read_timeout=12, connect_timeout=3, retries={"max_attempts": 1}),
+)
+
+
+def summarize(tool_name: str, tool_input: str, user_context: str) -> dict | None:
+    """Bedrock Haiku로 요약. 실패 시 None (서버는 raw fallback)."""
+    prompt = build_summary_prompt(tool_name, tool_input, user_context)
+    body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 400,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    try:
+        resp = _bedrock.invoke_model(modelId=BEDROCK_MODEL_ID, body=json.dumps(body))
+        out = json.loads(resp["body"].read())
+        text = "".join(b.get("text", "") for b in out.get("content", []) if b.get("type") == "text")
+        result = parse_summary_response(text)
+        if result is None:
+            logger.warning("summary parse failed; raw=%s", text[:200])
+        return result
+    except Exception:
+        logger.exception("Bedrock summarize failed")
+        return None
