@@ -34,3 +34,12 @@ def test_returns_empty_when_no_user_text(tmp_path):
               "message": {"content": [{"type": "text", "text": "skill stuff"}]}}]
     path = _write(tmp_path, lines)
     assert extract_user_context(path) == ""
+
+
+def test_skips_interrupt_marker(tmp_path):
+    lines = [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "실제 사용자 지시입니다"}]}},
+        {"type": "user", "message": {"content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}},
+    ]
+    path = _write(tmp_path, lines)
+    assert extract_user_context(path) == "실제 사용자 지시입니다"

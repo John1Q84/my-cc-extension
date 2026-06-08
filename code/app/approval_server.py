@@ -57,7 +57,11 @@ def extract_user_context(transcript_path: str) -> str:
                     continue
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "text":
-                        last_user_text = c["text"]
+                        text = c["text"]
+                        # Skip interrupt markers
+                        if text.strip().startswith("[Request interrupted"):
+                            continue
+                        last_user_text = text
     except Exception:
         logger.exception("Failed to read transcript: %s", transcript_path)
 
@@ -86,7 +90,8 @@ def build_slack_blocks(
     ]
 
     if summary:
-        risk_lines = "\n".join(f"• {r}" for r in summary.get("risk", [])) or "• (특이사항 없음)"
+        risk_items = [r for r in summary.get("risk", []) if str(r).strip()]
+        risk_lines = "\n".join(f"• {r}" for r in risk_items) or "• (특이사항 없음)"
         blocks.append({
             "type": "section",
             "text": {
