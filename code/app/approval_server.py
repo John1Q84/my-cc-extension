@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request
 from slack_sdk import WebClient
 from summarizer import summarize
 from perm_buttons import extract_rules, build_permission_buttons
+from ask_blocks import build_ask_blocks, build_answers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -223,6 +224,37 @@ async def poll_dynamodb(
     return "timeout"
 
 
+async def poll_ask(ask_id: str, request: Request, message_ts: str, blocks: list, questions: list):
+    """ask 응답 polling. answered면 answers dict 반환, terminal/timeout이면 None."""
+    elapsed = 0
+    while elapsed < POLL_TIMEOUT:
+        await asyncio.sleep(POLL_INTERVAL)
+        elapsed += POLL_INTERVAL
+
+        if await request.is_disconnected():
+            logger.info("ask_id=%s resolved by terminal", ask_id)
+            update_slack_message(message_ts, blocks, ":desktop_computer:", "터미널에서 응답됨")
+            return None
+
+        try:
+            item = table.get_item(Key={"approval_id": ask_id}).get("Item", {})
+            if item.get("status") == "answered":
+                # 검증 결함 #1 (CRITICAL): boto3 resource API는 저장된 숫자를 Decimal로
+                # 역직렬화한다. 키뿐 아니라 oidx VALUE도 int로 강제하지 않으면
+                # build_answers의 options[Decimal] 인덱싱이 TypeError → 답변 전부 유실.
+                selections = {
+                    int(k): [int(o) for o in v]
+                    for k, v in item.get("selections", {}).items()
+                }
+                return build_answers(questions, selections)
+        except Exception:
+            logger.exception("ask poll failed for %s", ask_id)
+
+    logger.warning("ask_id=%s timed out", ask_id)
+    update_slack_message(message_ts, blocks, ":alarm_clock:", "시간 초과")
+    return None
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -290,6 +322,51 @@ async def notify(request: Request):
     except Exception:
         logger.exception("Failed to send notification")
         return {"status": "error", "message": "Failed to send notification"}
+
+
+@app.post("/ask")
+async def ask(request: Request):
+    body = await request.json()
+    tool_input = body.get("tool_input", {})
+    questions = tool_input.get("questions", [])
+    cwd = body.get("cwd", "")
+
+    if not questions:
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+
+    ask_id = str(uuid.uuid4())
+    expires_at = int(time.time()) + 600
+    table.put_item(Item={
+        "approval_id": ask_id,
+        "status": "pending",
+        "questions": json.dumps(questions, ensure_ascii=False),
+        "selections": {},
+        "expected_count": len(questions),
+        "cwd": cwd,
+        "expires_at": expires_at,
+        "created_at": int(time.time()),
+    })
+
+    blocks = build_ask_blocks(ask_id, questions)
+    slack_resp = slack.chat_postMessage(
+        channel=SLACK_CHANNEL_ID,
+        text=f"Claude Code 선택 요청 ({len(questions)}개 질문)",
+        blocks=blocks,
+    )
+    message_ts = slack_resp["ts"]
+    logger.info("ask_id=%s posted, ts=%s", ask_id, message_ts)
+
+    answers = await poll_ask(ask_id, request, message_ts, blocks, questions)
+
+    if answers is None:
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}
+
+    update_slack_message(message_ts, blocks, ":white_check_mark:", "응답 완료")
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": {**tool_input, "answers": answers},
+    }}
 
 
 @app.post("/hook")
