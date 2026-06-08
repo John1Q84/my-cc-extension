@@ -72,7 +72,7 @@ def summarize(tool_name: str, tool_input: str, user_context: str) -> dict | None
     prompt = build_summary_prompt(tool_name, tool_input, user_context)
     body = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 400,
+        "max_tokens": 600,
         "messages": [{"role": "user", "content": prompt}],
     }
     try:
