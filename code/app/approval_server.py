@@ -17,6 +17,7 @@ import boto3
 from fastapi import FastAPI, Request
 from slack_sdk import WebClient
 from summarizer import summarize
+from perm_buttons import extract_rules, build_permission_buttons
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ def build_slack_blocks(
     cwd: str = "",
     user_context: str = "",
     summary: dict | None = None,
+    rules: list | None = None,
 ) -> list:
     truncated_input = tool_input[:2800] + "..." if len(tool_input) > 2800 else tool_input
     truncated_context = user_context[:300] + "..." if len(user_context) > 300 else user_context
@@ -149,28 +151,7 @@ def build_slack_blocks(
         }
     )
 
-    blocks.append(
-        {
-            "type": "actions",
-            "block_id": approval_id,
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Approve"},
-                    "style": "primary",
-                    "value": "approve",
-                    "action_id": "approve_action",
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Deny"},
-                    "style": "danger",
-                    "value": "deny",
-                    "action_id": "deny_action",
-                },
-            ],
-        }
-    )
+    blocks.append(build_permission_buttons(approval_id, rules or []))
 
     return blocks
 
@@ -322,6 +303,9 @@ async def hook(request: Request):
     cwd = body.get("cwd", "")
     transcript_path = body.get("transcript_path", "")
 
+    permission_suggestions = body.get("permission_suggestions", [])
+    rules = extract_rules(permission_suggestions)
+
     # transcript에서 사용자의 최근 요청 컨텍스트 추출
     user_context = extract_user_context(transcript_path)
 
@@ -344,12 +328,13 @@ async def hook(request: Request):
             "user_context": user_context[:500],
             "expires_at": expires_at,
             "created_at": int(time.time()),
+            "rules": json.dumps(rules, ensure_ascii=False),
         }
     )
     logger.info("Created approval_id=%s for tool=%s", approval_id, tool_name)
 
     # Slack 메시지 전송
-    blocks = build_slack_blocks(approval_id, tool_name, tool_input, cwd, user_context, summary)
+    blocks = build_slack_blocks(approval_id, tool_name, tool_input, cwd, user_context, summary, rules)
     slack_resp = slack.chat_postMessage(
         channel=SLACK_CHANNEL_ID,
         text=f"Claude Code permission request: {tool_name}",
@@ -362,12 +347,15 @@ async def hook(request: Request):
     result = await poll_dynamodb(approval_id, request, message_ts, blocks)
 
     if result == "approved":
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PermissionRequest",
-                "decision": {"behavior": "allow"},
-            }
-        }
+        decision = {"behavior": "allow"}
+        # approve_rule로 승인된 경우 DynamoDB의 apply_rule 확인 → permissionRule 부착
+        try:
+            item = table.get_item(Key={"approval_id": approval_id}).get("Item", {})
+            if item.get("apply_rule") and rules:
+                decision["permissionRule"] = rules[0]  # 첫 규칙(단일 문자열). 배열 허용은 E2E 확인
+        except Exception:
+            logger.exception("apply_rule lookup failed for %s", approval_id)
+        return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}
     else:
         reason = "Denied via Slack" if result == "denied" else "Timed out waiting for approval"
         return {
