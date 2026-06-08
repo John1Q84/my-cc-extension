@@ -30,7 +30,18 @@ def test_merge_selection_partial_stays_pending():
 
 
 def test_merge_selection_decimal_keys_normalized():
-    # DynamoDB Decimal round-trip 방어: 기존 selections에 Decimal이 섞여도 안전
+    # DynamoDB Decimal round-trip 방어: 기존 selections의 Decimal 키를 str로 정규화해야
+    # 동일 qidx가 중복 카운트되지 않는다. Decimal("1") 키 + qidx=1 응답은 같은 질문이므로
+    # 키가 1개("1")로 합쳐져야 하고, expected_count=2에는 못 미쳐 pending이어야 한다.
     from decimal import Decimal
-    sel, status = merge_selection({"0": [Decimal("1")]}, qidx=1, selected=[2], expected_count=2)
+    sel, status = merge_selection({Decimal("1"): [0]}, qidx=1, selected=[2], expected_count=2)
+    assert sel == {"1": [2]}  # Decimal("1") 키가 "1"로 정규화되어 덮어써짐, 중복 없음
+    assert status == "pending"  # 질문 1개만 응답됨 (2개 중) → 거짓 answered 방지
+
+
+def test_merge_selection_mixed_decimal_and_str_keys():
+    # Decimal과 str 키가 섞여 있어도 모두 str로 정규화되어 정확히 카운트된다.
+    from decimal import Decimal
+    sel, status = merge_selection({Decimal("0"): [1]}, qidx=1, selected=[2], expected_count=2)
+    assert sel == {"0": [1], "1": [2]}  # 키 2개 (서로 다른 질문)
     assert status == "answered"

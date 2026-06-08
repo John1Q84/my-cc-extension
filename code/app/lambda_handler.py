@@ -50,8 +50,10 @@ def parse_ask_action(payload: dict) -> dict:
 
 def merge_selection(existing: dict, qidx: int, selected: list, expected_count: int) -> tuple:
     """기존 selections에 qidx 응답 병합 → (selections, status). 순수함수(테스트 대상).
-    검증 결함 #4: 누적/완료 임계 로직 격리. (참고: 실제 원자적 쓰기는 _handle_ask가 담당)"""
-    selections = dict(existing)
+    검증 결함 #4: 누적/완료 임계 로직 격리. (참고: 실제 원자적 쓰기는 _handle_ask가 담당)
+    DynamoDB Decimal round-trip 방어: 기존 키를 str로 정규화해 동일 qidx 중복 카운트 방지
+    (예: Decimal("1")와 str("1")가 별개 키로 남아 거짓 answered가 되는 것을 막음)."""
+    selections = {str(k): v for k, v in existing.items()}
     selections[str(qidx)] = selected
     status = "answered" if len(selections) >= expected_count else "pending"
     return selections, status
