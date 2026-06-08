@@ -316,6 +316,7 @@ async def hook(request: Request):
 
     # Bedrock Haiku로 요청 요약 (실패 시 None → raw fallback)
     summary = summarize(tool_name, tool_input, user_context)
+    logger.info("Summary %s for tool=%s", "generated" if summary else "unavailable (raw fallback)", tool_name)
 
     approval_id = str(uuid.uuid4())
     expires_at = int(time.time()) + 600  # TTL 10분
