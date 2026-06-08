@@ -76,7 +76,7 @@ def build_slack_blocks(
     user_context: str = "",
     summary: dict | None = None,
 ) -> list:
-    truncated_input = tool_input[:500] + "..." if len(tool_input) > 500 else tool_input
+    truncated_input = tool_input[:2800] + "..." if len(tool_input) > 2800 else tool_input
     truncated_context = user_context[:300] + "..." if len(user_context) > 300 else user_context
 
     blocks = [
@@ -320,7 +320,8 @@ async def hook(request: Request):
     user_context = extract_user_context(transcript_path)
 
     # Bedrock Haiku로 요청 요약 (실패 시 None → raw fallback)
-    summary = summarize(tool_name, tool_input, user_context)
+    # 동기 boto3 호출을 스레드로 오프로드 → 단일 이벤트 루프 차단 방지(동시 승인 폴링 유지)
+    summary = await asyncio.to_thread(summarize, tool_name, tool_input, user_context)
     logger.info("Summary %s for tool=%s", "generated" if summary else "unavailable (raw fallback)", tool_name)
 
     approval_id = str(uuid.uuid4())
