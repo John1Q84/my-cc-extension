@@ -1,5 +1,38 @@
 # Hands-off
 
+## 2026-06-08_15:40 — CHECKPOINT cp-20260608-1540: Permission 요약 완료 + Interactive Choices 설계·계획 검증완료
+
+### Change Log
+
+| 영역 | 상태 |
+|---|---|
+| **Plan 2 — Permission 요약 카드** | ✅ 구현·검증 완료 (Bedrock Haiku 요약, isMeta 필터, 1500자 보존). 실제 Slack 프로덕션 카드로 검증 |
+| 최종 리뷰 결함 3건 | ✅ 수정 (interrupt 마커, 동기 호출 to_thread, 빈 risk 불릿) + fallback 500→2800자 |
+| 이미지 placeholder 버그 | ✅ 수정 (`[Image #N]` 제거, 실제 텍스트 유지) |
+| **Interactive Choices** (PermissionRequest 3버튼 + AskUserQuestion 양방향) | 📋 spec + plan 작성, **적대적 검증(22 에이전트) 통과 → 4개 결함 반영**. 구현 착수 직전 |
+| 단위 테스트 | 15 passed |
+
+### git (브랜치: feature/permission-summary, 12 커밋, main 미머지)
+
+- `694ad49` plan + 검증 결함 4건 반영 (Decimal coercion, lambda region, 원자 selections, merge 테스트)
+- `2854345` fix: [Image #N] placeholder 제거
+- `ac53721` docs: interactive choices 설계 spec
+- (이전: Plan 2 요약 카드 9개 커밋)
+
+### 검증된 핵심 사실 (Interactive Choices 구현 전제)
+
+- PermissionRequest payload에 `permission_suggestions: [{type:addRules, rules:[{toolName,ruleContent}], behavior, destination}]` 옴 (조건부)
+- AskUserQuestion: PreToolUse hook, interactive에서 `permissionDecision:allow + updatedInput.answers` 주입 시 답 채택
+- **미검증**: hook `permissionRule` 실효성 → fail-safe로 흡수, Task 8 E2E 확인
+- **CRITICAL 회피**: DynamoDB Decimal 역직렬화 → build_answers int() coercion (검증으로 사전 차단)
+
+### 다음 단계
+
+- Interactive Choices 구현 (subagent-driven, plan: `docs/superpowers/plans/2026-06-08-interactive-choices.md`)
+- 보류(HOLD): Slack 자유텍스트 전달 (DynamoDB+세션 dual-watch 패턴)
+
+---
+
 ## 2026-06-06_11:35 — Permission 메시지 LLM 요약 요구 + Bedrock 검증
 
 ### 신규 요구사항 (사용자)
