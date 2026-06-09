@@ -376,6 +376,10 @@ async def hook(request: Request):
 
     # PermissionRequest payload 파싱
     tool_name = body.get("tool_name", "unknown")
+    # AskUserQuestion은 PreToolUse(/ask)가 전담 — PermissionRequest 중복 카드 방지
+    if tool_name == "AskUserQuestion":
+        return {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                       "decision": {"behavior": "allow"}}}
     tool_input = json.dumps(body.get("tool_input", {}), ensure_ascii=False, indent=2)
     cwd = body.get("cwd", "")
     transcript_path = body.get("transcript_path", "")
