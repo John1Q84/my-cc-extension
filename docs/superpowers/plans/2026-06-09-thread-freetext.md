@@ -6,7 +6,7 @@
 
 **Architecture:** `/hook`이 AskUserQuestion이면 즉시 allow(중복 방지). 카드 발신 시 `message_ts`를 DynamoDB에 저장하고 `message_ts` GSI로 thread reply를 역조회한다. lambda에 Slack Events API 경로(`/slack/events`)를 추가해 thread reply를 `free_text`로 기록하고, 서버 poll이 status(버튼) 우선·free_text 폴백으로 답을 채택한다.
 
-**Tech Stack:** Python 3.14, FastAPI, boto3(DynamoDB query/GSI), AWS Lambda, API Gateway, pytest, terraform.
+**Tech Stack:** Python (로컬 서버 3.14 venv / Lambda runtime python3.12), FastAPI, boto3(DynamoDB query/GSI), AWS Lambda, API Gateway, pytest, terraform.
 
 **검증 완료 전제 (`docs/superpowers/specs/2026-06-09-thread-freetext-design.md`):**
 - AskUserQuestion이 `/ask` + `/hook` 양쪽 발화(중복) — 로그 확인.
@@ -66,21 +66,28 @@ def test_permission_none_when_nothing():
 
 
 def test_ask_button_wins_over_freetext():
-    assert decide_ask(status="answered", free_text="자유답", question_count=1) == ("answered", None)
+    assert decide_ask(status="answered", free_text="자유답", question_count=1, has_selections=True) == ("answered", None)
 
 
 def test_ask_freetext_single_question():
     # 단일 질문 + free_text → 자유답 채택
-    assert decide_ask(status="pending", free_text="빨강 말고 초록", question_count=1) == ("freetext", "빨강 말고 초록")
+    assert decide_ask(status="pending", free_text="빨강 말고 초록", question_count=1, has_selections=False) == ("freetext", "빨강 말고 초록")
 
 
 def test_ask_freetext_ignored_multi_question():
     # 다중 질문 + free_text → 무시 (모호)
-    assert decide_ask(status="pending", free_text="아무거나", question_count=2) == (None, None)
+    assert decide_ask(status="pending", free_text="아무거나", question_count=2, has_selections=False) == (None, None)
 
 
 def test_ask_none_when_nothing():
-    assert decide_ask(status="pending", free_text=None, question_count=1) == (None, None)
+    assert decide_ask(status="pending", free_text=None, question_count=1, has_selections=False) == (None, None)
+
+
+def test_ask_button_wins_during_nonatomic_write_window():
+    # 검증 결함 #2: _handle_ask가 selection을 먼저 쓰고 status=answered를 나중에 쓰는
+    # 비원자 윈도우에서, status='pending'이지만 selections가 차있으면 버튼 우선
+    # (free_text가 먼저 있어도 버튼 선택을 폐기하지 않음)
+    assert decide_ask(status="pending", free_text="자유답", question_count=1, has_selections=True) == (None, None)
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
@@ -107,12 +114,17 @@ def decide_permission(status: str, free_text):
     return (None, None)
 
 
-def decide_ask(status: str, free_text, question_count: int):
+def decide_ask(status: str, free_text, question_count: int, has_selections: bool = False):
     """AskUserQuestion: 반환 (outcome, text).
     outcome: 'answered'|'freetext'|None.
-    free_text는 단일 질문일 때만 채택(다중은 모호 → 무시)."""
+    - status=='answered' → 버튼 확정.
+    - has_selections (버튼 선택이 기록됐으나 status flip 전 비원자 윈도우) → 버튼 우선,
+      free_text 폐기하고 대기(None) — 검증 결함 #2.
+    - free_text는 단일 질문이고 버튼 선택이 없을 때만 채택(다중은 모호 → 무시)."""
     if status == "answered":
         return ("answered", None)
+    if has_selections:
+        return (None, None)  # 버튼 진행 중 — answered flip 대기, free_text 폐기 안 함
     if free_text and question_count == 1:
         return ("freetext", free_text)
     return (None, None)
@@ -121,7 +133,7 @@ def decide_ask(status: str, free_text, question_count: int):
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `cd code/app && .venv/bin/pytest tests/test_poll_decision.py -v`
-Expected: PASS (7 passed)
+Expected: PASS (8 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -321,10 +333,48 @@ git commit -m "fix: /hook returns allow for AskUserQuestion to avoid duplicate c
 
 ---
 
-## Task 4: terraform — message_ts GSI + /slack/events 라우트
+## Task 4: terraform — message_ts GSI + /slack/events 라우트 + IAM Query 권한
 
 **Files:**
 - Modify: `code/terraform/main.tf`
+
+> **검증 결함 #1 반영 (CRITICAL):** lambda가 GSI를 query하려면 IAM 정책에 `dynamodb:Query` 액션과 **GSI 인덱스 ARN**(`<table>/index/*`)이 둘 다 필요하다. 현재 정책은 `UpdateItem`/`GetItem`만, 리소스는 베이스 테이블 ARN만 갖고 있어, 빠뜨리면 thread reply가 `AccessDeniedException`으로 **조용히 전부 실패**(except가 삼킴)한다. Step 0에서 먼저 수정.
+
+- [ ] **Step 0: lambda IAM 정책에 dynamodb:Query + GSI ARN 추가**
+
+`code/terraform/main.tf`의 `data "aws_iam_policy_document" "lambda_policy"` 첫 statement(66~74행)를 찾는다. 현재:
+
+```hcl
+data "aws_iam_policy_document" "lambda_policy" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+      "dynamodb:GetItem",
+    ]
+    resources = [aws_dynamodb_table.approval_requests.arn]
+  }
+```
+
+다음으로 교체 (Query 액션 추가 + 인덱스 ARN 추가):
+
+```hcl
+data "aws_iam_policy_document" "lambda_policy" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+      "dynamodb:GetItem",
+      "dynamodb:Query",
+    ]
+    resources = [
+      aws_dynamodb_table.approval_requests.arn,
+      "${aws_dynamodb_table.approval_requests.arn}/index/*",
+    ]
+  }
+```
+
+> GSI Query는 **인덱스 child-resource ARN**(`table/index/*`)으로 인가된다. 베이스 테이블 ARN만으로는 액션을 추가해도 거부된다 — 둘 다 필요.
 
 - [ ] **Step 1: DynamoDB 테이블에 message_ts 속성 + GSI 추가**
 
@@ -688,7 +738,9 @@ from poll_decision import decide_permission, decide_ask
         try:
             item = table.get_item(Key={"approval_id": ask_id}).get("Item", {})
             status = item.get("status", "pending")
-            outcome, text = decide_ask(status, item.get("free_text"), len(questions))
+            # 비원자 write 윈도우 대비: selections 차있으면 버튼 우선(검증 결함 #2)
+            has_selections = bool(item.get("selections"))
+            outcome, text = decide_ask(status, item.get("free_text"), len(questions), has_selections)
             if outcome == "answered":
                 # boto3 resource는 숫자를 Decimal로 역직렬화 → oidx int 강제 (답변 유실 방지)
                 selections = {
@@ -798,9 +850,10 @@ git commit -m "docs: record thread free-text implementation (co-worked with clau
 - [ ] poll_decision: 버튼 우선, free_text 폴백, 다중질문 free_text 무시
 - [ ] slack_events: url_verification, thread reply, bot/subtype/부모 무시
 - [ ] AskUserQuestion 카드 1개만 (중복 제거)
+- [ ] **IAM: lambda에 dynamodb:Query + GSI ARN 부여됨 (검증 결함 #1, CRITICAL)** — terraform apply 후 thread reply가 AccessDenied 없이 free_text 기록되는지 E2E로 확인
 - [ ] message_ts가 DynamoDB에 저장되고 GSI로 조회됨
 - [ ] thread 자유 텍스트 → AskUserQuestion 자유답 / PermissionRequest deny+reason
-- [ ] 버튼 vs thread 동시 시 버튼 우선
+- [ ] 버튼 vs thread 동시 시 버튼 우선 (decide_ask has_selections — 검증 결함 #2)
 - [ ] Slack Events URL 검증 통과 (url_verification)
 - [ ] 기존 버튼 흐름 회귀 없음
 - [ ] bot 자기 메시지 무시 (무한 루프 없음)
