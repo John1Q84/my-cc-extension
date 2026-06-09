@@ -27,6 +27,27 @@ _AWS_REGION = os.environ.get("SLACK_APPROVAL_AWS_REGION") or os.environ.get("AWS
 dynamodb = boto3.resource("dynamodb", region_name=_AWS_REGION)
 
 
+def parse_slack_event(body: dict) -> dict:
+    """Slack Events API body 파싱 (slack_events.py와 동일 로직 — lambda 단일파일 배포용 인라인).
+    반환: url_verification / thread_reply / ignore."""
+    btype = body.get("type")
+    if btype == "url_verification":
+        return {"kind": "url_verification", "challenge": body.get("challenge", "")}
+    if btype != "event_callback":
+        return {"kind": "ignore"}
+    event = body.get("event", {})
+    if event.get("type") != "message":
+        return {"kind": "ignore"}
+    if event.get("bot_id") or event.get("subtype"):
+        return {"kind": "ignore"}
+    thread_ts = event.get("thread_ts")
+    ts = event.get("ts")
+    if not thread_ts or thread_ts == ts:
+        return {"kind": "ignore"}
+    return {"kind": "thread_reply", "thread_ts": thread_ts,
+            "text": event.get("text", ""), "user": event.get("user", "unknown")}
+
+
 def parse_ask_action(payload: dict) -> dict:
     """Slack ask action → {ask_id, qidx, selected:[oidx], is_submit}.
     단일선택: action_id=ask::qidx::oidx, block_id=ask_id::qidx.
@@ -152,6 +173,41 @@ def _handle_ask(payload: dict, table_name: str) -> dict:
     return {"statusCode": 200, "body": ""}
 
 
+def _handle_event(body: dict, table_name: str) -> dict:
+    """Slack Events: url_verification 응답 또는 thread reply → free_text 기록.
+    가볍게 처리하고 즉시 200 (Slack 3초 ack)."""
+    parsed = parse_slack_event(body)
+    if parsed["kind"] == "url_verification":
+        return {"statusCode": 200, "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"challenge": parsed["challenge"]})}
+    if parsed["kind"] != "thread_reply":
+        return {"statusCode": 200, "body": ""}  # 무시해도 200 (재전송 방지)
+
+    table = dynamodb.Table(table_name)
+    try:
+        # message_ts GSI로 thread_ts(=부모 카드 ts)에 해당하는 pending 항목 조회
+        resp = table.query(
+            IndexName="message_ts-index",
+            KeyConditionExpression="message_ts = :mt",
+            ExpressionAttributeValues={":mt": parsed["thread_ts"]},
+        )
+        items = resp.get("Items", [])
+        if not items:
+            return {"statusCode": 200, "body": ""}  # 매칭 없음 — 무시
+        approval_id = items[0]["approval_id"]
+        table.update_item(
+            Key={"approval_id": approval_id},
+            UpdateExpression="SET free_text = :ft, decided_by = :u, decided_at = :ts",
+            ExpressionAttributeValues={
+                ":ft": parsed["text"], ":u": parsed["user"], ":ts": int(time.time()),
+            },
+        )
+    except Exception:
+        logger.exception("event free_text update failed")
+        return {"statusCode": 200, "body": ""}  # 실패해도 200 (Slack 재전송 방지)
+    return {"statusCode": 200, "body": ""}
+
+
 def handler(event, context):
     logger.info("Received event: %s", json.dumps(event, default=str))
 
@@ -180,7 +236,16 @@ def handler(event, context):
         logger.warning("Invalid Slack signature")
         return {"statusCode": 401, "body": "Unauthorized"}
 
-    # Payload 파싱
+    # Slack Events API(thread reply 등)는 JSON body — interactive(payload= 폼)와 분기
+    # body가 JSON으로 파싱되고 "type" 키가 있으면 event 경로
+    try:
+        json_body = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        json_body = None
+    if isinstance(json_body, dict) and "type" in json_body and "payload" not in body[:20]:
+        return _handle_event(json_body, table_name)
+
+    # Payload 파싱 (interactive 버튼)
     try:
         parsed = parse_qs(body)
         payload = json.loads(parsed["payload"][0])
