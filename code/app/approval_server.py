@@ -19,6 +19,7 @@ from slack_sdk import WebClient
 from summarizer import summarize
 from perm_buttons import extract_rules, build_permission_buttons
 from ask_blocks import build_ask_blocks, build_answers
+from poll_decision import decide_permission, decide_ask
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -212,9 +213,15 @@ async def poll_dynamodb(
             resp = table.get_item(Key={"approval_id": approval_id})
             item = resp.get("Item", {})
             status = item.get("status", "pending")
-            if status in ("approved", "denied"):
-                logger.info("approval_id=%s status=%s", approval_id, status)
-                return status
+            outcome, reason = decide_permission(status, item.get("free_text"))
+            if outcome == "approved" or outcome == "denied":
+                logger.info("approval_id=%s status=%s", approval_id, outcome)
+                return outcome
+            if outcome == "deny_freetext":
+                logger.info("approval_id=%s resolved by thread free_text", approval_id)
+                update_slack_message(message_ts, blocks, ":speech_balloon:", "thread 응답으로 처리됨")
+                # reason을 호출부가 쓸 수 있도록 status 문자열에 실어 반환
+                return "freetext:" + reason
         except Exception:
             logger.exception("DynamoDB GetItem failed for %s", approval_id)
 
@@ -238,15 +245,20 @@ async def poll_ask(ask_id: str, request: Request, message_ts: str, blocks: list,
 
         try:
             item = table.get_item(Key={"approval_id": ask_id}).get("Item", {})
-            if item.get("status") == "answered":
-                # 검증 결함 #1 (CRITICAL): boto3 resource API는 저장된 숫자를 Decimal로
-                # 역직렬화한다. 키뿐 아니라 oidx VALUE도 int로 강제하지 않으면
-                # build_answers의 options[Decimal] 인덱싱이 TypeError → 답변 전부 유실.
+            status = item.get("status", "pending")
+            # 비원자 write 윈도우 대비: selections 차있으면 버튼 우선(검증 결함 #2)
+            has_selections = bool(item.get("selections"))
+            outcome, text = decide_ask(status, item.get("free_text"), len(questions), has_selections)
+            if outcome == "answered":
+                # boto3 resource는 숫자를 Decimal로 역직렬화 → oidx int 강제 (답변 유실 방지)
                 selections = {
                     int(k): [int(o) for o in v]
                     for k, v in item.get("selections", {}).items()
                 }
                 return build_answers(questions, selections)
+            if outcome == "freetext":
+                logger.info("ask_id=%s resolved by thread free_text", ask_id)
+                return {questions[0]["question"]: text}
         except Exception:
             logger.exception("ask poll failed for %s", ask_id)
 
@@ -355,6 +367,14 @@ async def ask(request: Request):
     )
     message_ts = slack_resp["ts"]
     logger.info("ask_id=%s posted, ts=%s", ask_id, message_ts)
+    try:
+        table.update_item(
+            Key={"approval_id": ask_id},
+            UpdateExpression="SET message_ts = :mt",
+            ExpressionAttributeValues={":mt": message_ts},
+        )
+    except Exception:
+        logger.exception("message_ts 저장 실패 ask_id=%s", ask_id)
 
     answers = await poll_ask(ask_id, request, message_ts, blocks, questions)
 
@@ -423,9 +443,23 @@ async def hook(request: Request):
     )
     message_ts = slack_resp["ts"]
     logger.info("Slack message sent for approval_id=%s ts=%s", approval_id, message_ts)
+    # thread reply 역조회용 message_ts 저장 (GSI)
+    try:
+        table.update_item(
+            Key={"approval_id": approval_id},
+            UpdateExpression="SET message_ts = :mt",
+            ExpressionAttributeValues={":mt": message_ts},
+        )
+    except Exception:
+        logger.exception("message_ts 저장 실패 approval_id=%s", approval_id)
 
     # DynamoDB polling (터미널 disconnect 감지 포함)
     result = await poll_dynamodb(approval_id, request, message_ts, blocks)
+
+    if result.startswith("freetext:"):
+        reason = result[len("freetext:"):]
+        return {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                "decision": {"behavior": "deny", "reason": reason}}}
 
     if result == "approved":
         decision = {"behavior": "allow"}
