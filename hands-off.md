@@ -1,5 +1,39 @@
 # Hands-off
 
+## 2026-06-10_12:00 — CHECKPOINT cp-20260610-1200: Interactive Choices + Thread Free-text 구현·E2E 완료
+
+### Change Log
+
+| 영역 | 상태 |
+|---|---|
+| **Interactive Choices** (PermissionRequest 3버튼 + AskUserQuestion 양방향) | ✅ 구현·E2E 완료 |
+| **Thread Free-text** (중복카드 제거 + thread reply 자유텍스트 → Claude) | ✅ 구현·**라이브 E2E 완료** (`resolved by thread free_text` 확인) |
+| 단위 테스트 | 51 passed |
+| 인프라 배포 | terraform apply 완료 (message_ts GSI, /slack/events 라우트, IAM dynamodb:Query) |
+| Slack 앱 설정 | Event Subscriptions ON, message.channels+message.groups 구독, 재설치 완료 |
+
+### 검증된 핵심 동작 (E2E)
+
+- AskUserQuestion 중복 카드 제거 (/hook이 AskUserQuestion이면 즉시 allow)
+- 비공개 채널(privategroup) → message.groups 이벤트 수신 필수
+- bot 자기 메시지(message_changed/bot_id) 무시 → 무한루프 방지
+- 사람 thread reply → Slack Events → lambda(GSI query) → free_text → 서버 poll → Claude 전달 (완전 라운드트립)
+- dual-watch: 버튼 우선, free_text 폴백
+
+### 적대적 검증으로 사전 차단한 결함
+
+- **Interactive Choices**: DynamoDB Decimal 인덱싱 TypeError(CRITICAL), lambda NoRegionError, 비원자 selections race
+- **Thread Free-text**: lambda IAM dynamodb:Query + GSI ARN 누락(CRITICAL — 없었으면 thread reply 전부 silent fail), has_selections race, runtime 표기
+
+### git (브랜치 feature/permission-summary, main 이후 29 커밋, 미머지)
+
+### 다음 단계
+
+- 브랜치 정리/머지 결정 (Plan 2 + Interactive Choices + Thread Free-text 전부 한 브랜치)
+- 보류(HOLD): 세션 단위 thread 묶기(채널 noisy 개선), 질의 무관 일반 지시 전달
+
+---
+
 ## 2026-06-08_15:40 — CHECKPOINT cp-20260608-1540: Permission 요약 완료 + Interactive Choices 설계·계획 검증완료
 
 ### Change Log
