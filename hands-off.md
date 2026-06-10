@@ -25,11 +25,16 @@
 - **Interactive Choices**: DynamoDB Decimal 인덱싱 TypeError(CRITICAL), lambda NoRegionError, 비원자 selections race
 - **Thread Free-text**: lambda IAM dynamodb:Query + GSI ARN 누락(CRITICAL — 없었으면 thread reply 전부 silent fail), has_selections race, runtime 표기
 
-### git (브랜치 feature/permission-summary, main 이후 29 커밋, 미머지)
+### git
+
+- `feature/permission-summary` → `main` fast-forward 머지 완료 (30커밋)
+- `origin/main`(github.com/John1Q84/my-cc-extension, **public**) push 완료, 보안 스캔 0건
+- checkpoint 태그 push: `cp-20260608-1540`, `cp-20260610-1200`
+- README.md 신규 기능 반영 갱신
 
 ### 다음 단계
 
-- 브랜치 정리/머지 결정 (Plan 2 + Interactive Choices + Thread Free-text 전부 한 브랜치)
+- 개선사항 발생 시 추가 변경
 - 보류(HOLD): 세션 단위 thread 묶기(채널 noisy 개선), 질의 무관 일반 지시 전달
 
 ---

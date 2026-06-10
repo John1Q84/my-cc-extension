@@ -1,12 +1,22 @@
 # slack-approval
 
-Claude Code의 권한 요청을 Slack으로 전달하고, Slack에서 Approve/Deny 할 수 있는 시스템.
+Claude Code의 권한 요청·선택 질의를 Slack으로 전달하고, Slack 버튼 또는 thread 답글로 응답할 수 있는 시스템.
 
 ## 개요
 
-Claude Code 실행 중 파일 쓰기, 명령 실행 등 권한 요청이 발생하면 Slack 메시지로 알림을 받고, 버튼 클릭으로 승인/거부할 수 있다.
+Claude Code 실행 중 파일 쓰기, 명령 실행 등 권한 요청이 발생하면 Slack 메시지로 알림을 받고, 버튼 클릭으로 승인/거부할 수 있다. 자리를 비웠을 때도 Slack에서 진행 중인 작업을 이어갈 수 있도록 다음 기능을 제공한다.
 
 ![Slack Approval Sample](docs/images/slack-approval-sample.png)
+
+### 주요 기능
+
+| 기능 | 설명 |
+|------|------|
+| **권한 승인** (PermissionRequest) | 권한 요청을 Slack 카드로 전달. `허용` / `허용 + 다시 안 묻기(규칙)` / `거부` **동적 버튼**. "다시 안 묻기"는 Claude Code가 제안한 `permission_suggestions` 규칙을 그대로 적용. |
+| **LLM 요약 카드** | 긴 명령/도구 입력을 Bedrock Claude Haiku로 요약하여 **요청사항 / 영향도·Risk / 확인 필요**를 구조화 표시. 요약 실패 시 원문 표시(fail-open). |
+| **선택 질의** (AskUserQuestion) | Claude Code가 사용자에게 객관식을 물을 때, 실제 옵션을 Slack **버튼/체크박스**로 노출하고 선택을 Claude Code로 반환(양방향). |
+| **Thread 자유 응답** | 질의 카드의 thread에 자유 텍스트로 답글을 달면, 버튼 대신 그 텍스트가 답으로 전달됨. AskUserQuestion=자유답 주입, PermissionRequest=거부+사유. |
+| **터미널/Slack dual-watch** | 터미널·Slack 어느 쪽에서 응답해도 먼저 들어온 것을 채택. 버튼 우선, thread 답글 폴백. |
 
 ### PermissionRequest Hook
 
@@ -91,8 +101,21 @@ Claude Code는 두 단계의 설정 파일을 지원한다:
 
 ### Hook 동작 방식
 
-- Hook이 `{"behavior": "allow"}`를 반환하면 승인, `{"behavior": "deny"}`를 반환하면 거부
-- 터미널에서 직접 승인/거부하면 hook 연결이 끊기며, 서버가 이를 감지하여 Slack 메시지를 자동 업데이트
+- **PermissionRequest** hook(`/hook`)이 `{"behavior": "allow"}`를 반환하면 승인, `{"behavior": "deny"}`를 반환하면 거부. `허용 + 다시 안 묻기` 선택 시 `permissionRule`을 함께 반환해 규칙을 등록.
+- **AskUserQuestion**은 `PreToolUse` hook(`/ask`)이 전담. 옵션을 Slack 버튼으로 띄우고, 응답을 `updatedInput.answers`로 반환. (PermissionRequest hook은 AskUserQuestion이면 즉시 allow하여 중복 카드를 방지.)
+- 터미널에서 직접 승인/거부하면 hook 연결이 끊기며, 서버가 이를 감지하여 Slack 메시지를 자동 업데이트.
+- **Thread 답글**은 Slack Events API(`/slack/events`)로 수신 → `message_ts` GSI로 해당 카드를 찾아 `free_text`로 기록 → 서버 polling이 회수. bot 자신의 메시지는 무시(무한 루프 방지).
+
+### 엔드포인트 / Slack 앱 요구사항
+
+| 경로 | 용도 | Slack 설정 |
+|------|------|-----------|
+| `POST /hook` (로컬 :8080) | PermissionRequest hook 수신 | Claude Code hook (http) |
+| `POST /ask` (로컬 :8080) | AskUserQuestion hook 수신 | Claude Code PreToolUse hook (http) |
+| `POST /slack/interact` (API GW) | 버튼 클릭 | **Interactivity** Request URL |
+| `POST /slack/events` (API GW) | thread 답글 | **Event Subscriptions** Request URL + `message.channels`/`message.groups` 구독 |
+
+> Bot Token Scope: `chat:write`(발신), `channels:history`+`groups:history`(thread 답글 수신). thread 자유 응답을 쓰려면 Event Subscriptions 활성화 후 앱 재설치가 필요하다. 비공개 채널은 `message.groups` 구독이 필수.
 
 ## 처음부터 배포하기 (Fresh Deployment)
 
@@ -147,10 +170,18 @@ export TF_VAR_slack_signing_secret="..."
 3. 로컬 서비스 설치 (Python venv + LaunchAgent + Claude Code hook)
 4. API Gateway URL 출력
 
-### Step 4: Slack Interactivity 설정
+### Step 4: Slack Interactivity + Event Subscriptions 설정
 
-`deploy.sh` 출력에 표시된 API Gateway URL을 Slack App의 Interactivity Request URL에 등록한다.
-자세한 방법은 [Slack App 설정 가이드 - Step 6](docs/slack-app-setup-guide.md#step-6-interactivity-설정) 참고.
+`deploy.sh` 출력에 표시된 API Gateway URL을 Slack App에 등록한다:
+
+1. **Interactivity & Shortcuts** → Request URL: `<API_GW_URL>/slack/interact` (버튼 클릭)
+2. **Event Subscriptions** → Enable Events ON → Request URL: `<API_GW_URL>/slack/events`
+   - URL 검증은 lambda가 challenge에 응답해 자동 통과(배포 후).
+   - **Subscribe to bot events**: 공개 채널이면 `message.channels`, 비공개 채널이면 `message.groups` 추가
+3. **OAuth & Permissions** → Bot Token Scopes에 `channels:history`(+필요시 `groups:history`) 추가 → **앱 재설치**
+4. 사용 채널에 bot 초대(`/invite @<bot>`)
+
+> 2~4는 **thread 자유 응답** 기능을 쓸 때만 필요하다. 버튼 승인만 쓸 거면 1번(Interactivity)만으로 충분하다. 자세한 방법은 [Slack App 설정 가이드 - Step 6](docs/slack-app-setup-guide.md#step-6-interactivity-설정) 참고.
 
 ### Step 5: 동작 확인
 
@@ -173,12 +204,13 @@ curl http://localhost:8080/health
 flowchart LR
     subgraph LOCAL["Local Machine"]
         CC["Claude Code"]
-        HS["Approval Server\nlocalhost:8080"]
+        HS["Approval Server\nlocalhost:8080\n/hook /ask"]
     end
 
     subgraph AWS["AWS"]
-        DDB["DynamoDB\nTTL 10min"]
-        APIGW["API Gateway"]
+        BR["Bedrock\nHaiku 요약"]
+        DDB["DynamoDB\nTTL 10min\n+ message_ts GSI"]
+        APIGW["API Gateway\n/slack/interact\n/slack/events"]
         LMB["Lambda"]
     end
 
@@ -187,20 +219,23 @@ flowchart LR
         USER["User"]
     end
 
-    CC -- "POST /hook\nPermissionRequest" --> HS
-    HS -- "chat.postMessage\nApprove/Deny 버튼" --> BOT
-    HS -- "PutItem\nstatus=pending" --> DDB
-    HS -. "polling\nGetItem 5s" .-> DDB
+    CC -- "POST /hook (Permission)\nPOST /ask (AskUserQuestion)" --> HS
+    HS -- "summarize" --> BR
+    HS -- "chat.postMessage\n동적 버튼/옵션" --> BOT
+    HS -- "PutItem status=pending\n+ message_ts" --> DDB
+    HS -. "polling 5s\nstatus or free_text" .-> DDB
 
     BOT --> USER
     USER -- "버튼 클릭" --> BOT
-    BOT -- "POST /slack/interact" --> APIGW
+    USER -- "thread 답글" --> BOT
+    BOT -- "POST /slack/interact (버튼)" --> APIGW
+    BOT -- "POST /slack/events (thread)" --> APIGW
     APIGW --> LMB
-    LMB -- "UpdateItem\nstatus=approved" --> DDB
+    LMB -- "버튼: UpdateItem status\nthread: GSI조회+free_text" --> DDB
     LMB -- "response_url\n메시지 업데이트" --> BOT
 
-    DDB -. "decision" .-> HS
-    HS -- "allow / deny" --> CC
+    DDB -. "decision / answers" .-> HS
+    HS -- "allow/deny / updatedInput.answers" --> CC
 ```
 
 ## Workflow
@@ -251,8 +286,14 @@ slack-approval/
 │   └── slack-app-setup-guide.md # Slack App 설정 가이드
 ├── code/
 │   ├── app/                          # 기본 리전: ap-northeast-2 (환경변수로 변경 가능)
-│   │   ├── approval_server.py # 로컬 FastAPI 서버 (DynamoDB 접근 시 리전 사용)
-│   │   ├── lambda_handler.py  # AWS Lambda (Slack webhook)
+│   │   ├── approval_server.py # 로컬 FastAPI 서버 (/hook, /ask, /notify, polling)
+│   │   ├── lambda_handler.py  # AWS Lambda (Slack interact 버튼 + events thread 답글)
+│   │   ├── summarizer.py      # Bedrock Haiku 요약 (프롬프트/파서 + 호출)
+│   │   ├── perm_buttons.py    # permission_suggestions → 동적 버튼/규칙 (순수)
+│   │   ├── ask_blocks.py      # AskUserQuestion → Slack 블록/answers (순수)
+│   │   ├── poll_decision.py   # 버튼 vs thread free_text 답 채택 결정 (순수)
+│   │   ├── slack_events.py    # Slack Events API 파싱 (순수)
+│   │   ├── tests/             # pytest 단위 테스트 (51개)
 │   │   ├── requirements.txt   # Python 의존성
 │   │   └── .env.example       # 환경변수 템플릿
 │   ├── script/
@@ -317,6 +358,9 @@ tail -f ~/Library/Logs/oh-my-cc-agent/stderr.log
 
 | 일시 | 변경사항 |
 |------|----------|
+| 2026-06-10_13:00 | **Thread 자유 응답**: Slack Events API(`/slack/events`) + `message_ts` GSI로 thread 답글을 free_text로 수신, dual-watch(버튼 우선/free_text 폴백). AskUserQuestion 중복 카드 제거. lambda IAM `dynamodb:Query`+GSI ARN 추가. 라이브 E2E 완료 |
+| 2026-06-09_12:00 | **Interactive Choices**: PermissionRequest `허용/허용+다시안묻기/거부` 동적 버튼(permission_suggestions 기반), AskUserQuestion 양방향(`/ask`, 단일=버튼/멀티=체크박스). 단위 테스트 인프라(pytest) |
+| 2026-06-08_15:00 | **LLM 요약 카드**: Bedrock Claude Haiku로 요청사항/Risk/확인필요 구조화 요약(fail-open), isMeta 주입·interrupt 마커·`[Image #N]` placeholder 필터, 동기 호출 to_thread 오프로드 |
 | 2026-04-15_21:00 | Public repo 배포 준비: .DS_Store 제거, settings.local.json 가이드 추가, 경로 표현 일반화, 문서 개선 |
 | 2026-04-13_21:50 | README 다이어그램(Mermaid) + PermissionRequest Hook 설명 + tfsec/bandit 조치 + terminal disconnect 감지 |
 | 2026-04-13_11:50 | /slack-notify global skill 추가: 작업 완료 요약을 Slack 채널로 전송하는 /notify 엔드포인트 + skill |
